@@ -17,6 +17,7 @@ class instagrab {
 	$table_name;
 
 	function instagrab() {
+		add_action('init', array(&$this, 'instagrab_create_post_type'));
 		global $wpdb;
 
 		$this->table_name = $wpdb->prefix . $this->prefix . "ids";
@@ -40,6 +41,22 @@ class instagrab {
 		if (!is_admin() && ($this->last_running + $this->timeout) < time()) {
 			add_action("wp_loaded", array(&$this, "instagrabGrabAndSave"));
 		}
+		
+	}
+
+	function instagrab_create_post_type() {
+		register_post_type( 'instapic',
+			array(
+				'labels' => array(
+					'name' => __( 'Instapics' ),
+					'singular_name' => __( 'Instapic' )
+				),
+			'public' => true,
+			'has_archive' => true,
+			'menu_position' => 5,
+			'rewrite' => array('slug' => 'pics')
+			)
+		);
 	}
 
 	function instagrabInstall() {
@@ -185,28 +202,11 @@ class instagrab {
 		add_options_page(__('Instagrab','instagrab'), __('Instagrab','instagrab'), 'manage_options', 'instagrab', array(&$this, 'instagrab_add_options_page'));
 	}
 
-	function addImageToPost($title, $content, $tags, $category_id, $instagram_id, $hashtag) {
-		global $wpdb;
+	
 
-		if ($this->saveCacheToDb($instagram_id, $hashtag)) {
-			$id = @wp_insert_post(
-				array(
-					'post_title'   => $title,
-					'post_content'  => $content,
-					'post_status'   => 'publish',
-					'post_author'   => 1,
-					'post_category'  => array($category_id),
-					'tags_input'   => $tags,
-			
-				)
-			);
-			
-		}
-	}
-
-	function instagrabGrabAndSave() {
+	function instagrabGrabAndSave($rj = false) {
 		$hashtags = explode("\n", get_option($this->prefix . "tags"));
-
+		$count = 0;
 		require_once(ABSPATH . 'wp-admin/includes/taxonomy.php');
 
 		foreach($hashtags as $hashtag) {
@@ -214,21 +214,99 @@ class instagrab {
 			$images = $this->instagrabGetImagesByHashtag($hashtag);
 
 			foreach($images as $image) {
-				$link = home_url() . "/?tag=" . $image['author']['username'];
-				$content = <<<EOF
-	<a href="{$link}"><img width="30" src="{$image['author']['picture']}"/> {$image['author']['username']}</a>
-	<img src="{$image['images']['large']}" alt=""/>
-	<h3><a target="_blank" href="{$image['link']}"><img border="0" src="{$this->instagram_logo}" alt="Posted on Instagram"/></a> {$image['title']}</h3>
-EOF;
+				
+				if ($this->saveCacheToDb($image['images']['large'], $hashtag)) {
+					$count += 1;
+					$tags = array_unique(array_merge(array($image['author']['username'], $hashtag, "filter: " . $image['filter']), $image['tags']));
+					
+					$my_post = array(
+						 'post_title' => $image['title'],
+						 'post_content' => '',
+						 'post_author' => $postauthor,
+						 'post_category' => array($postcats),
+						 'post_status' => 'draft', //$poststatus,
+						 'post_type' => 'instapic'
+				 	 );
+					 
+					 	 
+					// Insert the post into the database
+				  	$new_post = wp_insert_post( $my_post );
+				  	
+				  	// attach the image
+				  	$local_url = $this->instagrabSaveLocally($image['images']['large'], $new_post);
+				  	$content = "<a target=\"_blank\" href=\"{$image['link']}\"><img border=\"0\" src=\"{$local_url}\" /></a>";
+				  	
+				  	//update and publish the post
+				  	$update_post = array();
+					$update_post['ID'] = $new_post;
+					$update_post['post_status'] = 'publish';
+					$update_post['post_content'] = $content;
 
-				$tags = array_unique(array_merge(array($image['author']['username'], $hashtag, "filter: " . $image['filter']), $image['tags']));
-				$this->addImageToPost($image['title'], $content, $tags, $category_id, $image['id'], $hashtag);
+					// Update the post into the database
+					wp_update_post( $update_post );
+				}
 			}
 		}
 
 		update_option($this->prefix . "running", time());
+		if ($rj) {
+			//return json
+			echo json_encode(array('count' => $count));
+		}
 	}
 
+	function instagrabSaveLocally($url, $postid) {
+
+		require_once(ABSPATH . "wp-admin" . '/includes/image.php');
+		require_once(ABSPATH . "wp-admin" . '/includes/file.php');
+		require_once(ABSPATH . "wp-admin" . '/includes/media.php');
+
+
+		$attach = array();
+		
+		
+
+		try {
+
+			
+			
+			$tmp = download_url( $url );
+			$file_array = array(
+				'name' => basename( $url ),
+				'tmp_name' => $tmp
+			);
+			
+			// Check for download errors
+			if ( is_wp_error( $tmp ) ) {
+			
+				@unlink( $file_array[ 'tmp_name' ] );
+				$attach[0] = 0;
+			}
+
+			$id = media_handle_sideload( $file_array, $postid );
+			// Check for handle sideload errors.
+		 
+			if ( is_wp_error( $id ) ) {
+			
+				@unlink( $file_array['tmp_name'] );
+				$attach[0] = 0;
+			} else {
+				
+			 	$attach[0] =  $id;
+			
+			}
+			
+		
+		}
+		
+		catch (Exception $e) {
+			$attach[0] = $e;
+		}
+
+		return wp_get_attachment_url( $attach[0] );
+	}
+
+	
 
 	function instagrabGetImagesByHashtag($hashtag, $count = 50){
 		$images = array();
@@ -300,5 +378,6 @@ EOF;
 
 }
 	$instagrab = new instagrab();
+	
 
 ?>
